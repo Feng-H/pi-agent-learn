@@ -50,13 +50,18 @@ export interface LLMResponse {
 export async function callLLM(
   messages: Message[],
   tools: ToolDefinition[] = [],
-  model: string = DEFAULT_MODEL
+  model: string = DEFAULT_MODEL,
+  systemPrompt?: string
 ): Promise<LLMResponse> {
   const payload: any = {
     model,
     max_tokens: 4096,
     messages,
   };
+
+  if (systemPrompt && systemPrompt.trim()) {
+    payload.system = systemPrompt.trim();
+  }
 
   if (tools.length > 0) {
     payload.tools = tools;

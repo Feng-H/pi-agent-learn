@@ -21,13 +21,19 @@
   - 📖 **详细研学复盘**：[docs/lesson-01-dialogue-and-learnings.md](./docs/lesson-01-dialogue-and-learnings.md)
 - [x] **阶段二：多轮长上下文治理与不可变规则金字塔 (Context Governance & Rule Pyramid)**
   - 多轮会话生命周期与实时 Token 仪表盘
-  - 拒绝粗暴人工截断，构建双层全自动治理：
-    - L1 微观层：单轮工具臃肿输出自动脱水（折叠冗余日志，保留提炼结论）
-    - L2 宏观层：跨轮超阈值自动滚动蒸馏，沉淀【系统长期记忆备忘录】
+  - 拒绝粗暴人工截断，构建双层全自动治理（L1 单轮工具脱水 + L2 跨轮滚动蒸馏）
   - 破除规则漂移：解构不可变宪法层（代码 System Prompt vs 项目文件 `AGENTS.md`）
-  - “隔壁朋友测试法”黄金边界判定
   - 📖 **详细研学复盘**：[docs/lesson-02-context-and-rules.md](./docs/lesson-02-context-and-rules.md)
-- [ ] **阶段三：待选演化方向（方向盘与刹车 / 真实工具集 / 验收与回滚）**
+- [x] **阶段三：Pi 风格核心文件工具箱与自主代码修复 (Pi-Style Tools & Self-Repair)**
+  - 破除“单一 Bash 依赖”：转义符灾难与上下文防爆考量
+  - 实现三大核心工具：
+    - `read_file`：行号分页与局部切片
+    - `write_file`：原子覆盖与自动目录补全
+    - `edit_file`：精准字符串替换与三重防错防歧义（Guardrails）
+  - 融合 System Prompt 与 `AGENTS.md` 双重规范注入
+  - 端到端实测：Agent 自主阅读、精准修复 `sample-calculator` 中的 Bug 并跑测通过
+  - 📖 **详细研学复盘**：[docs/lesson-03-pi-tools-and-repair.md](./docs/lesson-03-pi-tools-and-repair.md)
+- [ ] **阶段四：打造方向盘与刹车 (Permission & Steering 机制)**
 
 ---
 

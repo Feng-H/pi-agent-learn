@@ -1,6 +1,7 @@
 import { callLLM, type Message, type ContentBlock, type ToolDefinition } from "./llm.js";
-import { bashToolDefinition, executeBash } from "./tools.js";
+import { ALL_TOOLS, dispatchTool } from "./tools.js";
 import { dehydratePriorToolOutputs, compactSessionIfNeeded } from "./context-manager.js";
+import { buildSystemPrompt } from "./prompt.js";
 
 export interface SessionStats {
   turnCount: number;
@@ -43,7 +44,7 @@ export async function runAgentTurn(
   options: RunOptions = {}
 ) {
   const { maxSteps = 10 } = options;
-  const tools: ToolDefinition[] = [bashToolDefinition];
+  const tools: ToolDefinition[] = ALL_TOOLS;
 
   session.stats.turnCount++;
   const turnNum = session.stats.turnCount;
@@ -69,7 +70,8 @@ export async function runAgentTurn(
     step++;
     console.log(`\n▶ [Turn ${turnNum} / Step ${step}] 正在请求模型决策 (发送整个历史上下文)...`);
 
-    const response = await callLLM(session.messages, tools);
+    const systemPrompt = buildSystemPrompt();
+    const response = await callLLM(session.messages, tools, undefined, systemPrompt);
 
     // 统计 Token
     if (response.usage) {
@@ -113,12 +115,7 @@ export async function runAgentTurn(
       const args = tc.input;
 
       console.log(`⚙️ [Harness 执行工具] ${toolName} -> 参数: ${JSON.stringify(args)}`);
-      let resultText = "";
-      if (toolName === "bash") {
-        resultText = await executeBash(args.command);
-      } else {
-        resultText = `Unknown tool: ${toolName}`;
-      }
+      const resultText = await dispatchTool(toolName, args || {});
 
       console.log(`📥 [输出预览]: ${resultText.slice(0, 150)}${resultText.length > 150 ? "..." : ""}`);
 
