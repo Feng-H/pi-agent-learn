@@ -36,6 +36,10 @@ export interface LLMResponse {
   role: "assistant";
   content: ContentBlock[];
   stop_reason: "end_turn" | "tool_use" | "max_tokens" | string;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+  };
 }
 
 /**

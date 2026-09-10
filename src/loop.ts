@@ -1,69 +1,113 @@
 import { callLLM, type Message, type ContentBlock, type ToolDefinition } from "./llm.js";
 import { bashToolDefinition, executeBash } from "./tools.js";
 
+export interface SessionStats {
+  turnCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+}
+
+/**
+ * 代表一个跨轮次存活的会话实体 (Session)
+ * 只要 REPL 进程不退出，它就持久保存在内存中
+ */
+export class AgentSession {
+  public messages: Message[] = [];
+  public stats: SessionStats = {
+    turnCount: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+  };
+
+  /** 清空会话历史（相当于 /clear） */
+  public clear() {
+    this.messages = [];
+    console.log("🧹 [Session] 会话历史已清空，开启全新对话。");
+  }
+}
+
 interface RunOptions {
   maxSteps?: number;
 }
 
 /**
- * 核心 Agent 循环 (ReAct Loop)
- * @param userPrompt 用户下达的初始指令
- * @param options 可选配置 (如最大步数)
+ * 运行单次人机交互轮次 (Turn)
+ * - 外层：用户的这句指令被追加到 session.messages
+ * - 内层：模型通过 ReAct while 循环调用工具，直到本轮结束
+ * - 结束后：完整的上下文保留在 session.messages 中，供下一轮继续使用
  */
-export async function runAgentLoop(userPrompt: string, options: RunOptions = {}) {
+export async function runAgentTurn(
+  session: AgentSession,
+  userPrompt: string,
+  options: RunOptions = {}
+) {
   const { maxSteps = 10 } = options;
   const tools: ToolDefinition[] = [bashToolDefinition];
 
-  // 1. 初始化对话历史 (上下文)
-  const messages: Message[] = [
-    { role: "user", content: userPrompt },
-  ];
+  session.stats.turnCount++;
+  const turnNum = session.stats.turnCount;
 
-  console.log(`\n🤖 [Agent 启动] 目标: "${userPrompt}"\n${"─".repeat(50)}`);
+  // 1. 将用户的最新输入，追加到跨轮次常驻的历史列表中
+  session.messages.push({ role: "user", content: userPrompt });
+
+  console.log(`\n${"═".repeat(60)}`);
+  console.log(`🎯 [第 ${turnNum} 轮对话开始] 用户指令: "${userPrompt}"`);
+  console.log(`📚 [上下文状态] 当前累积历史消息条数: ${session.messages.length}`);
+  console.log(`${"═".repeat(60)}`);
 
   let step = 0;
+  let turnInputTokens = 0;
+  let turnOutputTokens = 0;
 
-  // 2. 核心 while 循环: 只要目标没达成且没超过最大步数就一直跑
+  // 2. 内层 ReAct 循环
   while (step < maxSteps) {
     step++;
-    console.log(`\n▶ [Step ${step}] 正在请求模型决策...`);
+    console.log(`\n▶ [Turn ${turnNum} / Step ${step}] 正在请求模型决策 (发送整个历史上下文)...`);
 
-    // ① 把历史上下文发送给 LLM
-    const response = await callLLM(messages, tools);
+    const response = await callLLM(session.messages, tools);
 
-    // ② 记录模型的回复到历史中 (保持上下文完整)
-    messages.push({
+    // 统计 Token
+    if (response.usage) {
+      turnInputTokens += response.usage.input_tokens;
+      turnOutputTokens += response.usage.output_tokens;
+      session.stats.totalInputTokens += response.usage.input_tokens;
+      session.stats.totalOutputTokens += response.usage.output_tokens;
+      console.log(
+        `   📊 [本步 Token] 输入: ${response.usage.input_tokens} | 输出: ${response.usage.output_tokens}`
+      );
+    }
+
+    // 模型的回复追加到历史中
+    session.messages.push({
       role: "assistant",
       content: response.content,
     });
 
-    // ③ 检查模型是否输出了普通文本回答
+    // 打印文本回复
     const textBlocks = response.content.filter((b) => b.type === "text");
     for (const tb of textBlocks) {
       if (tb.text) {
-        console.log(`💬 [Agent 思考/回复]:\n${tb.text}`);
+        console.log(`\n💬 [Agent 回复]:\n${tb.text}`);
       }
     }
 
-    // ④ 核心判断标准: 检查模型是否需要调用工具
+    // 检查是否有工具调用
     const toolCalls = response.content.filter((b) => b.type === "tool_use");
 
-    // 标准 A: 如果没有任何工具调用请求 -> 目标已达成 (自然结束)
+    // 若无工具调用 -> 本轮完成
     if (toolCalls.length === 0) {
-      console.log(`\n✅ [目标达成] Agent 认为任务已完成，退出循环 (共执行 ${step} 步)`);
-      return;
+      console.log(`\n✅ [本轮任务完成] 共执行 ${step} 步思考与交互`);
+      break;
     }
 
-    // 标准 B: 如果有工具调用 -> Harness 介入执行工具，并将结果喂回模型
+    // 若有工具调用 -> 执行并将结果追加进历史
     const toolResults: ContentBlock[] = [];
-
     for (const tc of toolCalls) {
       const toolName = tc.name;
       const toolId = tc.id!;
       const args = tc.input;
 
-      console.log(`⚙️ [Harness 拦截执行] 工具: ${toolName}, 参数: ${JSON.stringify(args)}`);
-
+      console.log(`⚙️ [Harness 执行工具] ${toolName} -> 参数: ${JSON.stringify(args)}`);
       let resultText = "";
       if (toolName === "bash") {
         resultText = await executeBash(args.command);
@@ -71,9 +115,8 @@ export async function runAgentLoop(userPrompt: string, options: RunOptions = {})
         resultText = `Unknown tool: ${toolName}`;
       }
 
-      console.log(`📥 [工具返回输出]:\n${resultText.slice(0, 300)}${resultText.length > 300 ? "..." : ""}`);
+      console.log(`📥 [输出预览]: ${resultText.slice(0, 150)}${resultText.length > 150 ? "..." : ""}`);
 
-      // 组装 tool_result 块
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolId,
@@ -81,15 +124,19 @@ export async function runAgentLoop(userPrompt: string, options: RunOptions = {})
       });
     }
 
-    // ⑤ 将本轮工具的执行结果，作为新的输入消息 (role: "user") 追加到历史中
-    messages.push({
+    // 把工具输出作为 user 消息存入历史，供下一步作为输入
+    session.messages.push({
       role: "user",
       content: toolResults,
     });
-
-    // 循环继续: 下一轮会带着这个 tool_result 再次请求 LLM
   }
 
-  // 标准 C: 达到最大步数兜底，强行打断
-  console.log(`\n⚠️ [安全退出] 已达到最大限制步数 (${maxSteps})，终止循环以防止死循环。`);
+  // 3. 本轮结束时的 Token 与上下文仪表盘
+  const totalTokens = session.stats.totalInputTokens + session.stats.totalOutputTokens;
+  console.log(`\n${"─".repeat(60)}`);
+  console.log(`📈 [会话 Token 仪表盘]`);
+  console.log(`   • 本轮消耗: 输入 ${turnInputTokens} + 输出 ${turnOutputTokens} = ${turnInputTokens + turnOutputTokens} Tokens`);
+  console.log(`   • 会话累计: 输入 ${session.stats.totalInputTokens} + 输出 ${session.stats.totalOutputTokens} = ${totalTokens} Tokens`);
+  console.log(`   • 内存中留存的历史消息总数: ${session.messages.length} 条`);
+  console.log(`${"─".repeat(60)}\n`);
 }

@@ -1,27 +1,30 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { runAgentLoop } from "./loop.js";
+import { AgentSession, runAgentTurn } from "./loop.js";
 
 async function main() {
   const argPrompt = process.argv.slice(2).join(" ").trim();
+  const session = new AgentSession();
 
-  // 如果命令行直接传了参数，例如: npm run dev -- "查询系统信息"
+  // 单次命令行直接传参
   if (argPrompt) {
-    await runAgentLoop(argPrompt);
+    await runAgentTurn(session, argPrompt);
     return;
   }
 
-  // 否则进入轻量 REPL 模式
-  console.log("==================================================");
-  console.log("  🚀 Pi Agent Minimal Harness (Stage 1)");
-  console.log("  输入你的任务要求，按回车让 Agent 自主执行。输入 exit 退出。");
-  console.log("==================================================\n");
+  // 多轮交互式 REPL
+  console.log("===============================================================");
+  console.log("  🚀 Pi Agent Harness (Stage 2.1: Multi-Turn Stateful REPL)");
+  console.log("  • 支持连续多轮对话与上下文记忆");
+  console.log("  • 输入 /clear 清空历史");
+  console.log("  • 输入 exit 退出");
+  console.log("===============================================================\n");
 
   const rl = readline.createInterface({ input, output });
 
   try {
     while (true) {
-      const query = await rl.question("\npi> ");
+      const query = await rl.question("pi> ");
       const trimmed = query.trim();
 
       if (!trimmed) continue;
@@ -30,7 +33,12 @@ async function main() {
         break;
       }
 
-      await runAgentLoop(trimmed);
+      if (trimmed === "/clear") {
+        session.clear();
+        continue;
+      }
+
+      await runAgentTurn(session, trimmed);
     }
   } finally {
     rl.close();
