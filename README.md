@@ -18,19 +18,16 @@
   - 通用场景验收契约机制设计
   - 三大协议深度剖析：OpenAI Chat vs Anthropic Messages vs OpenAI Responses
   - 实战攻坚：为 VPS 网关编写透明中间件，以 SQLite TTL 方案真正打通状态化 Responses 记忆链路
-  - 📖 **详细研学复盘与对话记录**：[docs/lesson-01-dialogue-and-learnings.md](./docs/lesson-01-dialogue-and-learnings.md)
-- [ ] **阶段二：Coding 工具箱与系统提示词 (Coding Engine)**
-  - 实现精准编辑（`read` / `write` / `edit` / 目录检索）
-  - 精简系统提示词（Token 效率优先）
-- [ ] **阶段三：控制权与安全刹车 (Permission & Steering)**
-  - 交互式危险操作授权门（Permission Gate）
-  - 运行中介入打断与指导（Steering）
-- [ ] **阶段四：上下文管理与会话回溯 (Session Rewind & Compaction)**
-  - 上下文滑动压缩（Compaction）
-  - 树状会话记录与 `/rewind` 撤回分支
-- [ ] **阶段五：插件扩展与技能注入 (Skills & Extensions)**
-  - 兼容 `SKILL.md` 规范的技能解析与加载
-  - 规划模式（Plan Mode）与子代理分发
+  - 📖 **详细研学复盘**：[docs/lesson-01-dialogue-and-learnings.md](./docs/lesson-01-dialogue-and-learnings.md)
+- [x] **阶段二：多轮长上下文治理与不可变规则金字塔 (Context Governance & Rule Pyramid)**
+  - 多轮会话生命周期与实时 Token 仪表盘
+  - 拒绝粗暴人工截断，构建双层全自动治理：
+    - L1 微观层：单轮工具臃肿输出自动脱水（折叠冗余日志，保留提炼结论）
+    - L2 宏观层：跨轮超阈值自动滚动蒸馏，沉淀【系统长期记忆备忘录】
+  - 破除规则漂移：解构不可变宪法层（代码 System Prompt vs 项目文件 `AGENTS.md`）
+  - “隔壁朋友测试法”黄金边界判定
+  - 📖 **详细研学复盘**：[docs/lesson-02-context-and-rules.md](./docs/lesson-02-context-and-rules.md)
+- [ ] **阶段三：待选演化方向（方向盘与刹车 / 真实工具集 / 验收与回滚）**
 
 ---
 
