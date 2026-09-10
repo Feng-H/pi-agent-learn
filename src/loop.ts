@@ -1,5 +1,6 @@
 import { callLLM, type Message, type ContentBlock, type ToolDefinition } from "./llm.js";
 import { bashToolDefinition, executeBash } from "./tools.js";
+import { dehydratePriorToolOutputs, compactSessionIfNeeded } from "./context-manager.js";
 
 export interface SessionStats {
   turnCount: number;
@@ -49,6 +50,10 @@ export async function runAgentTurn(
 
   // 1. 将用户的最新输入，追加到跨轮次常驻的历史列表中
   session.messages.push({ role: "user", content: userPrompt });
+
+  // 【L2 治理检测】：如果历史消息过多或 Token 偏高，自动静默蒸馏早期记忆
+  const lastInputTokens = session.stats.totalInputTokens;
+  await compactSessionIfNeeded(session.messages, lastInputTokens);
 
   console.log(`\n${"═".repeat(60)}`);
   console.log(`🎯 [第 ${turnNum} 轮对话开始] 用户指令: "${userPrompt}"`);
@@ -131,12 +136,18 @@ export async function runAgentTurn(
     });
   }
 
-  // 3. 本轮结束时的 Token 与上下文仪表盘
+  // 3. 【L1 治理触发】：本轮任务已结项，立即对历史中臃肿的 tool_result 脱水折叠
+  const savedChars = dehydratePriorToolOutputs(session.messages);
+
+  // 4. 本轮结束时的 Token 与上下文仪表盘
   const totalTokens = session.stats.totalInputTokens + session.stats.totalOutputTokens;
   console.log(`\n${"─".repeat(60)}`);
   console.log(`📈 [会话 Token 仪表盘]`);
   console.log(`   • 本轮消耗: 输入 ${turnInputTokens} + 输出 ${turnOutputTokens} = ${turnInputTokens + turnOutputTokens} Tokens`);
   console.log(`   • 会话累计: 输入 ${session.stats.totalInputTokens} + 输出 ${session.stats.totalOutputTokens} = ${totalTokens} Tokens`);
-  console.log(`   • 内存中留存的历史消息总数: ${session.messages.length} 条`);
+  console.log(`   • 内存留存历史消息: ${session.messages.length} 条`);
+  if (savedChars > 0) {
+    console.log(`   • 💧 [L1 工具脱水]: 自动挤压折叠了 ${savedChars} 个字符的原始工具冗余输出！`);
+  }
   console.log(`${"─".repeat(60)}\n`);
 }

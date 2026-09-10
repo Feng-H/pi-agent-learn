@@ -1,0 +1,97 @@
+import { callLLM, type Message, type ContentBlock } from "./llm.js";
+
+export interface GovernanceResult {
+  l1CharsDehydrated: number;
+  l2Compacted: boolean;
+  distillationSummary?: string;
+}
+
+const TOOL_OUTPUT_MAX_RETAIN_CHARS = 300;
+const COMPACT_TOKEN_WATERMARK = 1500; // 累计/单次 token 超过此值触发蒸馏
+const COMPACT_MESSAGE_COUNT_WATERMARK = 6; // 消息条数超过此值触发蒸馏
+
+/**
+ * 【第一层治理：L1 工具输出脱水 (Tool Output Dehydration)】
+ * 在每一轮人机交互结束后触发。
+ * 对历史中臃肿的 tool_result 进行脱水折叠，只留开头和结尾预览。
+ */
+export function dehydratePriorToolOutputs(messages: Message[]): number {
+  let totalSavedChars = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+
+    for (const block of msg.content) {
+      if (block.type === "tool_result" && typeof block.content === "string") {
+        const originalLen = block.content.length;
+        if (originalLen > TOOL_OUTPUT_MAX_RETAIN_CHARS) {
+          const head = block.content.slice(0, 120);
+          const tail = block.content.slice(-80);
+          const omitted = originalLen - 200;
+          block.content = `${head}\n... [💧 Harness L1 脱水：已折叠 ${omitted} 字符冗余日志，结论已由模型在当轮沉淀] ...\n${tail}`;
+          totalSavedChars += omitted;
+        }
+      }
+    }
+  }
+
+  return totalSavedChars;
+}
+
+/**
+ * 【第二层治理：L2 宏观滚动蒸馏 (Rolling Distillation)】
+ * 当会话上下文消息数或 Token 达到警戒水位线时触发。
+ * 将早期轮次自动化蒸馏为一份精炼的【事实备忘录 (Memory Ledger)】，保留最新活跃轮次。
+ */
+export async function compactSessionIfNeeded(
+  messages: Message[],
+  latestInputTokens: number
+): Promise<{ compacted: boolean; summary?: string }> {
+  // 仅在消息总数达到警戒线，或 Token 水位过高时触发
+  const needCompact =
+    messages.length >= COMPACT_MESSAGE_COUNT_WATERMARK ||
+    latestInputTokens >= COMPACT_TOKEN_WATERMARK;
+
+  if (!needCompact || messages.length <= 3) {
+    return { compacted: false };
+  }
+
+  console.log(`\n🌀 [Harness L2 触发] 检测到历史消息达 ${messages.length} 条 (Token 水位: ${latestInputTokens})，启动自动记忆蒸馏...`);
+
+  // 保留最后 2 条活跃消息（当前轮次的上下文），将之前的冷消息全部送去提炼
+  const splitIndex = messages.length - 2;
+  const coldMessages = messages.slice(0, splitIndex);
+  const hotMessages = messages.slice(splitIndex);
+
+  // 构造蒸馏专用提示词
+  const distillationMessages: Message[] = [
+    ...coldMessages,
+    {
+      role: "user",
+      content:
+        "【系统指令】：请将上述早期的对话历史，提炼为一份核心事实备忘录（Memory Ledger）。请包含：\n1. 用户的身份/核心意图与偏好；\n2. 已经确立的核心事实与已完成的操作；\n3. 重要的参数或配置信息。\n请用结构化要点输出，极其精炼，不要废话。",
+    },
+  ];
+
+  try {
+    const distillResponse = await callLLM(distillationMessages, [], "gemini-3.8-flash-high");
+    const summaryBlock = distillResponse.content.find((b) => b.type === "text");
+    const summaryText = summaryBlock?.text || "（历史记录已归档）";
+
+    // 重新拼装 messages：由备忘录 + 最新的活跃对话构成
+    const memoryLedgerMessage: Message = {
+      role: "user",
+      content: `【🧠 系统长期记忆备忘录 (Memory Ledger)】\n${summaryText}`,
+    };
+
+    messages.length = 0;
+    messages.push(memoryLedgerMessage, ...hotMessages);
+
+    console.log(`✨ [Harness L2 完成] 成功将 ${coldMessages.length} 条早期消息蒸馏为长期记忆备忘录！`);
+    return { compacted: true, summary: summaryText };
+  } catch (err: any) {
+    console.log(`⚠️ [Harness L2 异常] 自动蒸馏失败，保留原始消息: ${err.message}`);
+    return { compacted: false };
+  }
+}
