@@ -26,14 +26,18 @@
   - 📖 **详细研学复盘**：[docs/lesson-02-context-and-rules.md](./docs/lesson-02-context-and-rules.md)
 - [x] **阶段三：Pi 风格核心文件工具箱与自主代码修复 (Pi-Style Tools & Self-Repair)**
   - 破除“单一 Bash 依赖”：转义符灾难与上下文防爆考量
-  - 实现三大核心工具：
-    - `read_file`：行号分页与局部切片
-    - `write_file`：原子覆盖与自动目录补全
-    - `edit_file`：精准字符串替换与三重防错防歧义（Guardrails）
+  - 实现三大核心工具（`read_file` / `write_file` / `edit_file`）
   - 融合 System Prompt 与 `AGENTS.md` 双重规范注入
   - 端到端实测：Agent 自主阅读、精准修复 `sample-calculator` 中的 Bug 并跑测通过
   - 📖 **详细研学复盘**：[docs/lesson-03-pi-tools-and-repair.md](./docs/lesson-03-pi-tools-and-repair.md)
-- [ ] **阶段四：打造方向盘与刹车 (Permission & Steering 机制)**
+- [x] **阶段四：双轨方向盘与自动车道保持看门狗 (Steering Watchdog & Interruption)**
+  - 破除“人肉盯盘”假设：解决人不在电脑前 Agent 撞南墙白烧 Token 的核心痛点
+  - 打造双轨纠偏系统：
+    - 轨道 A（自动）：死循环检测与连续报错看门狗，毫秒级注入【当头棒喝警报】逼迫反思改道
+    - 轨道 B（人工）：非阻塞插话队列，随时顺从人类意志强行掉头
+  - 端到端实测：自动检测连续 404 报错并强制模型自主复盘寻找替代方案
+  - 📖 **详细研学复盘**：[docs/lesson-04-steering-watchdog.md](./docs/lesson-04-steering-watchdog.md)
+- [ ] **阶段五：打造安全气囊与刹车系统 (Permission Gate 权限拦截门)**
 
 ---
 

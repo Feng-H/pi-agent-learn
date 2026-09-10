@@ -2,6 +2,7 @@ import { callLLM, type Message, type ContentBlock, type ToolDefinition } from ".
 import { ALL_TOOLS, dispatchTool } from "./tools.js";
 import { dehydratePriorToolOutputs, compactSessionIfNeeded } from "./context-manager.js";
 import { buildSystemPrompt } from "./prompt.js";
+import { SteeringWatchdog } from "./steering.js";
 
 export interface SessionStats {
   turnCount: number;
@@ -15,6 +16,7 @@ export interface SessionStats {
  */
 export class AgentSession {
   public messages: Message[] = [];
+  public watchdog: SteeringWatchdog = new SteeringWatchdog();
   public stats: SessionStats = {
     turnCount: 0,
     totalInputTokens: 0,
@@ -24,6 +26,7 @@ export class AgentSession {
   /** 清空会话历史（相当于 /clear） */
   public clear() {
     this.messages = [];
+    this.watchdog.resetTurn();
     console.log("🧹 [Session] 会话历史已清空，开启全新对话。");
   }
 }
@@ -119,6 +122,9 @@ export async function runAgentTurn(
 
       console.log(`📥 [输出预览]: ${resultText.slice(0, 150)}${resultText.length > 150 ? "..." : ""}`);
 
+      // 登记到看门狗记录中
+      session.watchdog.recordToolExecution(step, toolName, args || {}, resultText);
+
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolId,
@@ -131,6 +137,16 @@ export async function runAgentTurn(
       role: "user",
       content: toolResults,
     });
+
+    // 【看门狗车道偏离检测】：检查是否需要注入自动警报或用户插话
+    const steeringAlert = session.watchdog.inspectDeviation();
+    if (steeringAlert) {
+      console.log(`\n🛡️ [Harness 方向盘介入] 向模型强制注入纠偏指令！`);
+      session.messages.push({
+        role: "user",
+        content: steeringAlert,
+      });
+    }
   }
 
   // 3. 【L1 治理触发】：本轮任务已结项，立即对历史中臃肿的 tool_result 脱水折叠
