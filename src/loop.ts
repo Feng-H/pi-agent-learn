@@ -3,6 +3,7 @@ import { ALL_TOOLS, dispatchTool } from "./tools.js";
 import { dehydratePriorToolOutputs, compactSessionIfNeeded } from "./context-manager.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { SteeringWatchdog } from "./steering.js";
+import { PermissionGate } from "./permission.js";
 
 export interface SessionStats {
   turnCount: number;
@@ -17,6 +18,7 @@ export interface SessionStats {
 export class AgentSession {
   public messages: Message[] = [];
   public watchdog: SteeringWatchdog = new SteeringWatchdog();
+  public permissionGate: PermissionGate = new PermissionGate();
   public stats: SessionStats = {
     turnCount: 0,
     totalInputTokens: 0,
@@ -27,12 +29,14 @@ export class AgentSession {
   public clear() {
     this.messages = [];
     this.watchdog.resetTurn();
+    this.permissionGate.reset();
     console.log("🧹 [Session] 会话历史已清空，开启全新对话。");
   }
 }
 
 interface RunOptions {
   maxSteps?: number;
+  mockPermissionAnswer?: string;
 }
 
 /**
@@ -115,15 +119,27 @@ export async function runAgentTurn(
     for (const tc of toolCalls) {
       const toolName = tc.name;
       const toolId = tc.id!;
-      const args = tc.input;
+      const args = tc.input || {};
 
-      console.log(`⚙️ [Harness 执行工具] ${toolName} -> 参数: ${JSON.stringify(args)}`);
-      const resultText = await dispatchTool(toolName, args || {});
+      // 🛡️ 权限闸门拦截检查（踩下刹车！）
+      const permission = await session.permissionGate.requestApproval(
+        toolName,
+        args,
+        options.mockPermissionAnswer
+      );
 
-      console.log(`📥 [输出预览]: ${resultText.slice(0, 150)}${resultText.length > 150 ? "..." : ""}`);
+      let resultText = "";
+      if (!permission.allowed) {
+        resultText = permission.reason || "Error: Operation was denied by user.";
+        console.log(`🚫 [工具执行被阻止]: ${resultText}`);
+      } else {
+        console.log(`⚙️ [Harness 执行工具] ${toolName} -> 参数: ${JSON.stringify(args)}`);
+        resultText = await dispatchTool(toolName, args);
+        console.log(`📥 [输出预览]: ${resultText.slice(0, 150)}${resultText.length > 150 ? "..." : ""}`);
+      }
 
       // 登记到看门狗记录中
-      session.watchdog.recordToolExecution(step, toolName, args || {}, resultText);
+      session.watchdog.recordToolExecution(step, toolName, args, resultText);
 
       toolResults.push({
         type: "tool_result",

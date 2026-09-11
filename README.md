@@ -32,12 +32,16 @@
   - 📖 **详细研学复盘**：[docs/lesson-03-pi-tools-and-repair.md](./docs/lesson-03-pi-tools-and-repair.md)
 - [x] **阶段四：双轨方向盘与自动车道保持看门狗 (Steering Watchdog & Interruption)**
   - 破除“人肉盯盘”假设：解决人不在电脑前 Agent 撞南墙白烧 Token 的核心痛点
-  - 打造双轨纠偏系统：
-    - 轨道 A（自动）：死循环检测与连续报错看门狗，毫秒级注入【当头棒喝警报】逼迫反思改道
-    - 轨道 B（人工）：非阻塞插话队列，随时顺从人类意志强行掉头
-  - 端到端实测：自动检测连续 404 报错并强制模型自主复盘寻找替代方案
+  - 打造双轨纠偏系统（自动看门狗车道保持 + 人工插话队列）
   - 📖 **详细研学复盘**：[docs/lesson-04-steering-watchdog.md](./docs/lesson-04-steering-watchdog.md)
-- [ ] **阶段五：打造安全气囊与刹车系统 (Permission Gate 权限拦截门)**
+- [x] **阶段五：安全气囊与刹车系统 (Permission Gate 权限分级拦截门)**
+  - 拒绝“狼来了”式的全量弹窗骚扰，确立三级安全光谱机制：
+    - `SAFE`（只读操作）：完全静默、自动放行
+    - `SENSITIVE`（文件修改/常规命令）：审批确认，支持 `[y]` 批准与 `[a]` 会话信任
+    - `DANGEROUS`（高危删除/机密敏感路径）：刹车绝对咬死，杜绝破坏性灾难
+  - 端到端实测：拦截高危 `rm -rf`，用户否决后模型自主停止破坏并体面复盘
+  - 📖 **详细研学复盘**：[docs/lesson-05-permission-gate.md](./docs/lesson-05-permission-gate.md)
+- [ ] **终章与生态扩展：兼容 `SKILL.md` 规范与定制技能动态注入**
 
 ---
 
