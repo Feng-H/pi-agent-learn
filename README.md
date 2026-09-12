@@ -48,6 +48,7 @@
   - 权限闸门原子级 Shell 拆解：按操作符（`&&` / `||` / `;` / `|` / `>`）切分子命令，封死前缀逃逸漏洞
   - REPL 异步非阻塞实时插话：在 Agent 单轮思考与工具执行中随时捕获键盘指导并送入看门狗
   - 自动化回归套件：新增 `src/test-architecture-fixes.ts` 全量覆盖漏洞防线
+  - 📖 **详细研学复盘**：[docs/lesson-06-industrial-hardening.md](./docs/lesson-06-industrial-hardening.md)
 - [ ] **终章与生态扩展：兼容 `SKILL.md` 规范与定制技能动态注入**
 
 ---
