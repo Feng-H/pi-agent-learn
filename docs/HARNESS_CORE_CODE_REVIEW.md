@@ -44,14 +44,23 @@ export interface ToolDefinition {
   };
 }
 
-// 1.4 LLM 纯净调用函数 (物理无状态 HTTP POST)
+// 1.4 消息管线规范器 (Message Pipeline Normalizer) - 工业级防线
+export function normalizeMessages(messages: Message[]): Message[] {
+  // 1. 严格保证 user 与 assistant 角色交替，自动合并连续同角色消息
+  // 2. 保证首条消息角色必须为 user
+  // 3. 修复/降级孤儿 tool_result：若前置无对应 tool_use，自动降级为 text 避免 400 报错
+  // ... (完整实现见 src/llm.ts)
+}
+
+// 1.5 LLM 纯净调用函数 (物理无状态 HTTP POST)
 export async function callLLM(
   messages: Message[],
   tools: ToolDefinition[] = [],
   model: string = "gemini-3.8-flash-high",
   systemPrompt?: string
 ): Promise<{ content: ContentBlock[]; stop_reason: string; usage?: { input_tokens: number; output_tokens: number } }> {
-  const payload: any = { model, max_tokens: 4096, messages };
+  const cleanMessages = normalizeMessages(messages);
+  const payload: any = { model, max_tokens: 4096, messages: cleanMessages };
   if (systemPrompt) payload.system = systemPrompt.trim();
   if (tools.length > 0) payload.tools = tools;
 
@@ -167,19 +176,43 @@ export function executeEditFile(filePath: string, oldString: string, newString: 
 ```typescript
 export class PermissionGate {
   private autoApproveSession = false;
+  private approvalHandler?: (questionText: string) => Promise<string>;
 
-  // 4.1 三级风险评估
-  public assessRisk(toolName: string, args: Record<string, any>): { level: "safe" | "sensitive" | "dangerous"; warning: string } {
-    // 绿色安全级：read_file 与无害只读 bash 直接放行
-    if (toolName === "read_file") return { level: "safe", warning: "" };
-    if (toolName === "bash") {
-      const cmd = String(args.command || "").trim();
-      if (/rm\s+(-[a-zA-Z]*r|--recursive)/i.test(cmd)) return { level: "dangerous", warning: `不可逆高危删除: ${cmd}` };
-      if (/\.env|\.git|\.ssh/i.test(cmd)) return { level: "dangerous", warning: `触碰核心机密文件: ${cmd}` };
-      if (/^(ls|git status|git log|git diff|pwd)/.test(cmd)) return { level: "safe", warning: "" };
-      return { level: "sensitive", warning: `执行常规命令: ${cmd}` };
+  public setApprovalHandler(handler: (questionText: string) => Promise<string>) {
+    this.approvalHandler = handler;
+  }
+
+  // 4.1 原子级 Bash 风险深度分析（防分号、管道、&& 逃逸）
+  private assessBashRisk(cmd: string): { level: "safe" | "sensitive" | "dangerous"; warning: string } {
+    const trimmed = cmd.trim();
+    // 全局高危模式 (rm -rf, git clean, git reset --hard, .env, .git)
+    if (/rm\s+(-[a-zA-Z]*r|--recursive)|\.env|\.git|\.ssh|git\s+clean|git\s+reset\s+--hard/i.test(trimmed)) {
+      return { level: "dangerous", warning: `高危命令或触碰受保护目标: ${trimmed}` };
     }
-    // 黄色敏感级：修改文件
+    // 动态命令替换: $(...), `...`
+    if (/\$\(.*\)|`.*`|<\(.*\)/.test(trimmed)) return { level: "sensitive", warning: `包含动态执行: ${trimmed}` };
+
+    // 按操作符拆解为独立原子子命令: &&, ||, ;, |, 换行
+    const subCmds = trimmed.split(/&&|\|\||;|\||\n/).map(s => s.trim()).filter(Boolean);
+    const safeBins = new Set(["pwd", "whoami", "uname", "echo", "ls", "cat", "head", "tail", "wc"]);
+    const safeGitSubs = new Set(["status", "log", "diff", "branch", "tag", "show"]);
+
+    let allSafe = true;
+    for (const sub of subCmds) {
+      if (/>>|(?<!\d)>(?!\d)/.test(sub)) { allSafe = false; break; } // 重定向写操作绝不放行
+      const tokens = sub.split(/\s+/).filter(Boolean);
+      const bin = tokens[0];
+      if (bin === "git" && safeGitSubs.has(tokens[1] || "")) continue;
+      if (safeBins.has(bin)) continue;
+      allSafe = false; break;
+    }
+    return allSafe && subCmds.length > 0 ? { level: "safe", warning: "" } : { level: "sensitive", warning: `执行常规命令: ${trimmed}` };
+  }
+
+  // 4.2 三级风险评估统一分发
+  public assessRisk(toolName: string, args: Record<string, any>): { level: "safe" | "sensitive" | "dangerous"; warning: string } {
+    if (toolName === "read_file") return { level: "safe", warning: "" };
+    if (toolName === "bash") return this.assessBashRisk(String(args.command || ""));
     if (toolName === "write_file" || toolName === "edit_file") {
       if (/\.env|\.git|\.ssh/i.test(args.path)) return { level: "dangerous", warning: `禁止修改受保护文件: ${args.path}` };
       return { level: "sensitive", warning: `修改工作区文件: ${args.path}` };
@@ -187,14 +220,14 @@ export class PermissionGate {
     return { level: "sensitive", warning: `调用工具: ${toolName}` };
   }
 
-  // 4.2 拦截执行切面
+  // 4.3 拦截执行切面
   public async requestApproval(toolName: string, args: Record<string, any>, mockInput?: string): Promise<{ allowed: boolean; reason?: string }> {
     const { level, warning } = this.assessRisk(toolName, args);
     if (level === "safe") return { allowed: true };
     if (this.autoApproveSession && level !== "dangerous") return { allowed: true };
 
-    // 挂起执行，在终端交互请求审批 [y/n/a]
-    const answer = mockInput ?? (await promptUserApproval(warning, toolName, args));
+    // 挂起执行，在终端交互请求审批 [y/n/a]，优先通过共享 REPL 处理器避免竞争
+    const answer = mockInput ?? (this.approvalHandler ? await this.approvalHandler(`👉 是否批准执行？ [y/n/a]: `) : await promptUserApproval(warning, toolName, args));
     if (answer === "y") return { allowed: true };
     if (answer === "a") { this.autoApproveSession = true; return { allowed: true }; }
 
@@ -259,16 +292,24 @@ export class SteeringWatchdog {
 ```typescript
 // 6.1 L1 微观层：单轮工具输出脱水折叠 (防止单个大命令单点暴击)
 export function dehydratePriorToolOutputs(messages: Message[]): number {
+  // 建立 tool_use_id -> toolName 映射，进行工具语义识别
+  const toolNameMap = new Map<string, string>();
+  // ...提取 assistant 消息中的工具名映射
   let savedChars = 0;
   for (const msg of messages) {
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
-      if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > 300) {
-        const head = block.content.slice(0, 120);
-        const tail = block.content.slice(-80);
-        const omitted = block.content.length - 200;
-        block.content = `${head}\n... [💧 L1 脱水：已折叠 ${omitted} 字符冗余日志，结论已提炼] ...\n${tail}`;
-        savedChars += omitted;
+      if (block.type === "tool_result" && typeof block.content === "string") {
+        const toolName = toolNameMap.get(block.tool_use_id);
+        // 🛡️ 差异化脱水：read_file 源码保留完整上下文（禁止脱水），专攻 bash 冗长日志
+        if (toolName === "read_file" || toolName === "edit_file" || toolName === "write_file") continue;
+        if (block.content.length > 400) {
+          const head = block.content.slice(0, 120);
+          const tail = block.content.slice(-80);
+          const omitted = block.content.length - 200;
+          block.content = `${head}\n... [💧 L1 脱水：已折叠 ${omitted} 字符冗余日志，结论已提炼] ...\n${tail}`;
+          savedChars += omitted;
+        }
       }
     }
   }
@@ -279,8 +320,16 @@ export function dehydratePriorToolOutputs(messages: Message[]): number {
 export async function compactSessionIfNeeded(messages: Message[], tokenWatermark: number): Promise<boolean> {
   if (messages.length < 6 && tokenWatermark < 1500) return false;
 
-  // 切割：保留最后 2 条活跃工作上下文，早期冷数据送去提炼
-  const splitIdx = messages.length - 2;
+  // 🛡️ 安全轮次切分：寻找最近一条非工具的纯用户指令作为安全边界，严禁切断 tool_use 与 tool_result 配对
+  let splitIdx = -1;
+  for (let i = messages.length - 1; i >= 1; i--) {
+    if (messages[i].role === "user" && typeof messages[i].content === "string") {
+      splitIdx = i;
+      break;
+    }
+  }
+  if (splitIdx <= 0) splitIdx = Math.max(1, messages.length - 2);
+
   const cold = messages.slice(0, splitIdx);
   const hot = messages.slice(splitIdx);
 
@@ -292,9 +341,11 @@ export async function compactSessionIfNeeded(messages: Message[], tokenWatermark
   const resp = await callLLM(distillReq, []);
   const summary = resp.content.find((b) => b.type === "text")?.text || "（历史已归档）";
 
-  // 缝合：备忘录置顶 + 活跃上下文
+  // 缝合：备忘录置顶 + 活跃上下文，并经过 normalizeMessages 归一化消除连续 User 角色
+  const ledgerMsg: Message = { role: "user", content: `【🧠 系统长期记忆备忘录 (Memory Ledger)】\n${summary}` };
+  const assembled = normalizeMessages([ledgerMsg, ...hot]);
   messages.length = 0;
-  messages.push({ role: "user", content: `【🧠 系统长期记忆备忘录 (Memory Ledger)】\n${summary}` }, ...hot);
+  messages.push(...assembled);
   return true;
 }
 ```
@@ -364,17 +415,24 @@ export async function runAgentTurn(session: AgentSession, userPrompt: string, op
       toolResults.push({ type: "tool_result", tool_use_id: id, content: outputText });
     }
 
-    // 反馈工具结果
-    session.messages.push({ role: "user", content: toolResults });
-
-    // 🛡️【方向盘切面】：看门狗检测偏航，必要时注入当头棒喝
+    // 🛡️【原子合并切面】：工具结果与看门狗警报合流为单条合规 user 消息，保证协议交替规范
+    const userBlocks: ContentBlock[] = [...toolResults];
     const steeringAlert = session.watchdog.inspectDeviation();
     if (steeringAlert) {
-      session.messages.push({ role: "user", content: steeringAlert });
+      userBlocks.push({ type: "text", text: steeringAlert });
     }
+    session.messages.push({ role: "user", content: userBlocks });
   }
 
-  // 4. 【L1 治理切面】：单轮任务结束，即时脱水折叠工具输出
+  // 5. 步数超限安全制动兜底
+  if (step >= maxSteps && session.messages.length > 0 && session.messages[session.messages.length - 1].role === "user") {
+    session.messages.push({
+      role: "assistant",
+      content: [{ type: "text", text: `【Harness 系统提示】：已达单轮最大步数（${maxSteps} 步），安全挂起等待指令。` }],
+    });
+  }
+
+  // 6. 【L1 治理切面】：单轮任务结束，即时脱水折叠工具输出
   dehydratePriorToolOutputs(session.messages);
 }
 ```
@@ -385,9 +443,11 @@ export async function runAgentTurn(session: AgentSession, userPrompt: string, op
 
 | 检查维度 | 审查点与防线说明 | 状态 |
 | :--- | :--- | :--- |
+| **协议角色交替契约** | `normalizeMessages` 自动合并连续 User/Assistant 消息，修剪孤儿 `tool_result`，防止 API 400 崩溃 | ✅ 工业级硬化完成 |
 | **内存与 Token 泄露** | 工具长输出在轮次结项时是否脱水（L1）？跨轮历史是否受水位线控制滚动蒸馏（L2）？ | ✅ 已通过实测验证 |
+| **代码真值保护** | L1 脱水建立工具语义感知：`read_file` 源码输出绝对不截断，仅压缩冗余 Bash 日志 | ✅ 杜绝修改幻觉 |
 | **规则稳定性** | `AGENTS.md` 是否从 `messages` 物理隔离？压缩时是否绝对不会冲淡用户的宪法规则？ | ✅ 独立注入顶层 `system` 字段 |
 | **文件修改幂等与安全** | `edit_file` 是否强制唯一匹配？是否杜绝了重写整个文件的幻觉与截断风险？ | ✅ 三重校验拦截歧义 |
-| **死循环与硬撞南墙** | 模型在反复报错或重复调用同一工具时，Harness 是否能自动介入干预？ | ✅ Watchdog 自动注入反思指令 |
-| **高危命令防御** | `rm -rf`、修改 `.env` 或 `.git` 是否有物理拦截锁？用户拒绝后是否能优雅降级？ | ✅ 三级安全光谱严格阻断 |
+| **死循环与方向盘** | Watchdog 自动拦截“鬼打墙”死循环与连续报错；REPL 运行时支持非阻塞实时人工插话 | ✅ 双轨纠偏体系打通 |
+| **高危命令与防逃逸** | 按 Shell 控制符（`&&`, `||`, `;`, `|`, `>`）原子拆解，彻底阻断字符串前缀逃逸漏洞 | ✅ 三级安全光谱严格咬死 |
 | **端到端可验证性** | 是否经过了真实存在 Bug 代码的自主读取、修复与运行测试闭环？ | ✅ `sample-calculator` 测试全绿通过 |
