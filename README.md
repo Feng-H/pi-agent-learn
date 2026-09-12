@@ -41,11 +41,18 @@
     - `DANGEROUS`（高危删除/机密敏感路径）：刹车绝对咬死，杜绝破坏性灾难
   - 端到端实测：拦截高危 `rm -rf`，用户否决后模型自主停止破坏并体面复盘
   - 📖 **详细研学复盘**：[docs/lesson-05-permission-gate.md](./docs/lesson-05-permission-gate.md)
+- [x] **阶段六：工业级防线硬化与架构健壮性重构 (Industrial Hardening & Protocol Normalizer)**
+  - 对标 **CMU 11-768 (AI Agents)** 核心要求：Assignment 1 · Harness 工业级标准
+  - 消息状态机规范器（`normalizeMessages`）：保证角色严格交替，自动修复/降级孤儿 `tool_result`
+  - 工具类型感知 L1 差异化脱水：源码（`read_file`）保真留存，仅对臃肿命令日志（`bash`）折叠
+  - 权限闸门原子级 Shell 拆解：按操作符（`&&` / `||` / `;` / `|` / `>`）切分子命令，封死前缀逃逸漏洞
+  - REPL 异步非阻塞实时插话：在 Agent 单轮思考与工具执行中随时捕获键盘指导并送入看门狗
+  - 自动化回归套件：新增 `src/test-architecture-fixes.ts` 全量覆盖漏洞防线
 - [ ] **终章与生态扩展：兼容 `SKILL.md` 规范与定制技能动态注入**
 
 ---
 
-## 快速开始
+## 快速上手与验证
 
 ### 1. 安装依赖
 ```bash
@@ -58,7 +65,14 @@ npm install
 cp .env.example .env
 ```
 
-### 3. 运行测试
+### 3. 运行架构自动化回归测试
+运行本次架构修复与防线全量验证（无需消耗外部 API Token）：
+```bash
+npm test
+```
+
+### 4. 启动交互式 Agent 会话
+启动多轮状态化 REPL，支持实时插话与三级权限拦截：
 ```bash
 npm run dev
 ```
