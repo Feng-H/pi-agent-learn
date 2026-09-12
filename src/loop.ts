@@ -117,7 +117,7 @@ export async function runAgentTurn(
     // 若有工具调用 -> 执行并将结果追加进历史
     const toolResults: ContentBlock[] = [];
     for (const tc of toolCalls) {
-      const toolName = tc.name;
+      const toolName = tc.name || "unknown";
       const toolId = tc.id!;
       const args = tc.input || {};
 
@@ -148,21 +148,37 @@ export async function runAgentTurn(
       });
     }
 
-    // 把工具输出作为 user 消息存入历史，供下一步作为输入
-    session.messages.push({
-      role: "user",
-      content: toolResults,
-    });
+    // 把工具输出与看门狗警报合成为单条合规 user 消息，保证协议交替规范
+    const userBlocks: ContentBlock[] = [...toolResults];
 
     // 【看门狗车道偏离检测】：检查是否需要注入自动警报或用户插话
     const steeringAlert = session.watchdog.inspectDeviation();
     if (steeringAlert) {
       console.log(`\n🛡️ [Harness 方向盘介入] 向模型强制注入纠偏指令！`);
-      session.messages.push({
-        role: "user",
-        content: steeringAlert,
+      userBlocks.push({
+        type: "text",
+        text: steeringAlert,
       });
     }
+
+    session.messages.push({
+      role: "user",
+      content: userBlocks,
+    });
+  }
+
+  // 步数溢出兜底：若达到最大步数，优雅收尾，避免历史停留在孤立的 user 工具返回
+  if (step >= maxSteps && session.messages.length > 0 && session.messages[session.messages.length - 1].role === "user") {
+    console.log(`\n⚠️ [步骤超限] 达到单轮最大允许交互步数 (${maxSteps} 步)，已触发安全制动。`);
+    session.messages.push({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: `【Harness 运行报告】：当前任务已达单轮允许的最大执行步数（${maxSteps} 步）。已完成当前阶段操作并安全挂起，等待指令。`,
+        },
+      ],
+    });
   }
 
   // 3. 【L1 治理触发】：本轮任务已结项，立即对历史中臃肿的 tool_result 脱水折叠

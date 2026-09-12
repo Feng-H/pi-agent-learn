@@ -5,7 +5,8 @@
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "test": "tsx src/test-architecture-fixes.ts"
   },
   "dependencies": {
     "@types/node": "^22.20.2",

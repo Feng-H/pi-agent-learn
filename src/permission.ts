@@ -23,6 +23,8 @@ const PROTECTED_PATTERNS = [
 // 明确判定为破坏性高危的命令特征
 const DANGEROUS_COMMAND_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)/i, // rm -rf
+  /\bgit\s+clean\b/i,
+  /\bgit\s+reset\s+--hard\b/i,
   /\bmkfs\b/i,
   /\bdd\s+if=/i,
   />\s*\/dev\/[a-z0-9]+/i,
@@ -33,6 +35,81 @@ const DANGEROUS_COMMAND_PATTERNS = [
 
 export class PermissionGate {
   private autoApproveSession = false;
+  private approvalHandler?: (questionText: string) => Promise<string>;
+
+  /** 注入共享的终端交互问答器，避免并发关闭 stdin */
+  public setApprovalHandler(handler: (questionText: string) => Promise<string>) {
+    this.approvalHandler = handler;
+  }
+
+  /**
+   * 深度分析 Bash 命令的原子构成，防止分号、管道、&& 逻辑拼接逃逸
+   */
+  private assessBashRisk(cmd: string): { level: SecurityLevel; warning: string } {
+    const trimmed = cmd.trim();
+
+    // 1. 高危模式全局硬扫描
+    for (const pat of DANGEROUS_COMMAND_PATTERNS) {
+      if (pat.test(trimmed)) {
+        return { level: "dangerous", warning: `检测到不可逆的高危命令模式: "${trimmed}"` };
+      }
+    }
+    for (const pat of PROTECTED_PATTERNS) {
+      if (pat.test(trimmed)) {
+        return { level: "dangerous", warning: `命令中涉及核心机密或受保护文件/路径: "${trimmed}"` };
+      }
+    }
+
+    // 2. 检测命令替换与动态执行符号：$(...), `...`, <(...)
+    if (/\$\(.*\)|`.*`|<\(.*\)/.test(trimmed)) {
+      return { level: "sensitive", warning: `检测到含有动态子命令执行: "${trimmed}"` };
+    }
+
+    // 3. 将复合命令按操作符拆解为原子子命令列表
+    // 拆分控制操作符: &&, ||, ;, |, 换行
+    const subCmds = trimmed.split(/&&|\|\||;|\||\n/).map((s) => s.trim()).filter(Boolean);
+
+    // 白名单定义：纯只读命令前缀
+    const safeSingleCommands = new Set(["pwd", "whoami", "uname", "which", "echo"]);
+    const safeReadBinaries = new Set(["ls", "cat", "head", "tail", "wc", "grep", "rg"]);
+    const safeGitSubcommands = new Set(["status", "log", "diff", "branch", "tag", "show"]);
+
+    let allSafe = true;
+
+    for (const sub of subCmds) {
+      // 如果子命令包含重定向写操作 (> 或 >>)，绝非只读安全命令
+      if (/>>|(?<!\d)>(?!\d)/.test(sub)) {
+        allSafe = false;
+        break;
+      }
+
+      const tokens = sub.split(/\s+/).filter(Boolean);
+      if (tokens.length === 0) continue;
+
+      const bin = tokens[0];
+
+      if (bin === "git") {
+        const gitSub = tokens[1] || "";
+        if (!safeGitSubcommands.has(gitSub)) {
+          allSafe = false;
+          break;
+        }
+      } else if (safeSingleCommands.has(bin) || safeReadBinaries.has(bin)) {
+        // 只读命令放行
+        continue;
+      } else {
+        // 任何不在纯只读白名单内的子指令（如编译、写入、删除、网络请求）
+        allSafe = false;
+        break;
+      }
+    }
+
+    if (allSafe && subCmds.length > 0) {
+      return { level: "safe", warning: "" };
+    }
+
+    return { level: "sensitive", warning: `即将执行自定义 Shell 命令: "${trimmed}"` };
+  }
 
   /**
    * 判定一个工具调用及其参数的安全等级
@@ -60,28 +137,9 @@ export class PermissionGate {
       return { level: "sensitive", warning: `即将修改工作区文件: "${filePath}"` };
     }
 
-    // 3. Bash 执行类工具：需深度检测脚本内容
+    // 3. Bash 执行类工具：深度原子级解析
     if (toolName === "bash") {
-      const cmd = String(args.command || "").trim();
-      for (const pat of DANGEROUS_COMMAND_PATTERNS) {
-        if (pat.test(cmd)) {
-          return { level: "dangerous", warning: `检测到不可逆的高危命令模式: "${cmd}"` };
-        }
-      }
-      for (const pat of PROTECTED_PATTERNS) {
-        if (pat.test(cmd)) {
-          return { level: "dangerous", warning: `命令中涉及核心机密或受保护文件: "${cmd}"` };
-        }
-      }
-
-      // 普通只读类 bash 命令视为安全（如 ls, git status, git log, pwd 等）
-      const safePrefixes = ["ls", "git status", "git log", "git diff", "pwd", "whoami", "uname", "echo"];
-      const isSafe = safePrefixes.some((p) => cmd.startsWith(p));
-      if (isSafe) {
-        return { level: "safe", warning: "" };
-      }
-
-      return { level: "sensitive", warning: `即将执行自定义 Shell 命令: "${cmd}"` };
+      return this.assessBashRisk(String(args.command || ""));
     }
 
     return { level: "sensitive", warning: `未知工具调用: ${toolName}` };
@@ -123,6 +181,13 @@ export class PermissionGate {
       // 自动化测试通道
       answer = mockInput.trim().toLowerCase();
       console.log(`[测试模拟用户输入]: ${answer}`);
+    } else if (this.approvalHandler) {
+      // 使用共享的 REPL 终端交互器
+      answer = (
+        await this.approvalHandler(`👉 是否批准执行该操作？ [y = 批准一次 / n = 拒绝 / a = 本次会话全部信任]: `)
+      )
+        .trim()
+        .toLowerCase();
     } else {
       const rl = readline.createInterface({ input, output });
       try {

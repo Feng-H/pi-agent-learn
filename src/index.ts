@@ -22,6 +22,17 @@ async function main() {
 
   const rl = readline.createInterface({ input, output });
 
+  // 共享终端问答器，避免多实例竞争 stdin
+  let isPromptingApproval = false;
+  session.permissionGate.setApprovalHandler(async (q) => {
+    isPromptingApproval = true;
+    try {
+      return await rl.question(q);
+    } finally {
+      isPromptingApproval = false;
+    }
+  });
+
   try {
     while (true) {
       const query = await rl.question("pi> ");
@@ -38,7 +49,22 @@ async function main() {
         continue;
       }
 
-      await runAgentTurn(session, trimmed);
+      // 在模型思考与工具执行期间，监听终端用户随意敲下的插话指令
+      const steerListener = (line: string) => {
+        if (isPromptingApproval) return;
+        const steerText = line.trim();
+        if (steerText) {
+          session.watchdog.pushHumanSteering(steerText);
+          console.log(`\n🚨 [人工握紧方向盘] 捕获实时插话指令: "${steerText}"，将在模型下一步行动前强制介入！`);
+        }
+      };
+
+      rl.on("line", steerListener);
+      try {
+        await runAgentTurn(session, trimmed);
+      } finally {
+        rl.removeListener("line", steerListener);
+      }
     }
   } finally {
     rl.close();
